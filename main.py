@@ -474,7 +474,13 @@ def drive_upload():
         return jsonify({"error": str(e)}), 500
 
 
-if __name__ == '__main__':
+# Initialize tables on import (for gunicorn)
+try:
+    ensure_tables()
+except Exception as e:
+    logger.error(f"Failed to init tables: {e}")
+
+if __name__ == "__main__":
     logger.info("Starting webhook service...")
     ensure_tables()
     port = int(os.environ.get('PORT', 8080))
