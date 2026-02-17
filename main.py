@@ -12,7 +12,6 @@ from datetime import datetime
 app = Flask(__name__)
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
-SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -45,7 +44,6 @@ def ensure_tables():
 
 def extract_bot_address(to_field):
     """Extract the bot email address from the To field"""
-    # Handle formats like "Bot Name <bot@crabpass.ai>" or just "bot@crabpass.ai"
     match = re.search(r'[\w.-]+@crabpass\.ai', to_field.lower())
     if match:
         return match.group(0)
@@ -53,7 +51,7 @@ def extract_bot_address(to_field):
 
 
 def find_bot_by_email(email_address):
-    """Find bot by email address (username part matches bot_username)"""
+    """Find bot by email address - flexible matching"""
     if not email_address:
         return None
     
@@ -62,13 +60,45 @@ def find_bot_by_email(email_address):
     
     with get_db() as conn:
         with conn.cursor() as cur:
-            # Match by bot_username (case insensitive)
-            cur.execute(
-                "SELECT id FROM bots WHERE LOWER(bot_username) = %s AND is_active = true",
-                (username,)
-            )
+            # Try multiple matching strategies:
+            # 1. Exact match (case insensitive)
+            # 2. Username matches start of bot_username (shog99 matches Shog99Bot)
+            # 3. bot_username without "bot" suffix
+            
+            cur.execute("""
+                SELECT id FROM bots 
+                WHERE is_active = true 
+                AND (
+                    LOWER(bot_username) = %s
+                    OR LOWER(bot_username) = %s
+                    OR LOWER(REPLACE(bot_username, 'Bot', '')) = %s
+                    OR LOWER(REPLACE(bot_username, 'bot', '')) = %s
+                    OR %s = LOWER(REPLACE(bot_username, 'Bot', ''))
+                    OR %s = LOWER(REPLACE(bot_username, 'bot', ''))
+                )
+                LIMIT 1
+            """, (username, username + 'bot', username, username, username, username))
+            
             row = cur.fetchone()
-            return row[0] if row else None
+            if row:
+                logger.info(f"Found bot ID {row[0]} for email {email_address}")
+                return row[0]
+            
+            # Fallback: try LIKE match
+            cur.execute("""
+                SELECT id FROM bots 
+                WHERE is_active = true 
+                AND LOWER(bot_username) LIKE %s
+                LIMIT 1
+            """, (username + '%',))
+            
+            row = cur.fetchone()
+            if row:
+                logger.info(f"Found bot ID {row[0]} via LIKE for email {email_address}")
+                return row[0]
+            
+            logger.warning(f"No bot found for email: {email_address} (username: {username})")
+            return None
 
 
 def store_email(bot_id, from_email, to_email, subject, body_plain, body_html):
