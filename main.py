@@ -603,7 +603,7 @@ def list_bots():
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT id, bot_username, user_id, is_active, created_at 
+                    SELECT id, bot_username, user_id, is_active, created_at, source 
                     FROM bots ORDER BY id DESC
                 """)
                 bots = [dict(row) for row in cur.fetchall()]
