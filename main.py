@@ -610,6 +610,21 @@ def list_bots():
                 return jsonify({"bots": bots, "count": len(bots)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/admin/backfill-sources', methods=['POST'])
+def backfill_sources():
+    """One-time backfill of source data"""
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                # Jetha99Bot from BotMaker
+                cur.execute("UPDATE bots SET source = 'BotMaker' WHERE bot_username = 'Jetha99Bot'")
+                # Rest from CrabPass Bot
+                cur.execute("UPDATE bots SET source = 'CrabPass Bot' WHERE source IS NULL")
+                conn.commit()
+                return jsonify({"status": "ok", "message": "Sources backfilled"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 try:
     ensure_tables()
 except Exception as e:
