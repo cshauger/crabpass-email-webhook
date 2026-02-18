@@ -36,6 +36,29 @@ def ensure_tables():
     """Create tables if they don't exist"""
     with get_db() as conn:
         with conn.cursor() as cur:
+            # Emails table - stores inbound emails for bots
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS emails (
+                    id SERIAL PRIMARY KEY,
+                    bot_id INTEGER REFERENCES bots(id),
+                    from_email TEXT NOT NULL,
+                    to_email TEXT NOT NULL,
+                    subject TEXT,
+                    body_plain TEXT,
+                    body_html TEXT,
+                    is_read BOOLEAN DEFAULT FALSE,
+                    received_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            
+            # Index for fast bot email lookup
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_emails_bot_id ON emails(bot_id)
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_emails_unread ON emails(bot_id, is_read) WHERE is_read = FALSE
+            """)
+            
             # OAuth tokens table
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS oauth_tokens (
@@ -65,7 +88,7 @@ def ensure_tables():
             """)
             
             conn.commit()
-    logger.info("Tables ready")
+    logger.info("Tables ready (emails, oauth_tokens, oauth_state)")
 
 
 # ============== EMAIL FUNCTIONS ==============
@@ -236,6 +259,11 @@ def get_google_auth_url(bot_id, user_id):
 
 # ============== ROUTES ==============
 
+@app.route('/', methods=['GET'])
+def root():
+    return jsonify({"service": "CrabPass Email Webhook", "status": "ok"})
+
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({"status": "ok"})
@@ -383,7 +411,7 @@ def drive_upload():
     bot_id = data.get('bot_id')
     user_id = data.get('user_id')
     file_name = data.get('file_name')
-    file_content_b64 = data.get('file_content')  # Base64 encoded
+    file_content_b64 = data.get('file_content')
     folder_name = data.get('folder_name', 'CrabPass')
     
     if not all([bot_id, user_id, file_name, file_content_b64]):
@@ -399,7 +427,6 @@ def drive_upload():
         
         headers = {'Authorization': f'Bearer {token}'}
         
-        # Find or create folder
         folder_query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
         folder_response = requests.get(
             f"https://www.googleapis.com/drive/v3/files",
@@ -423,7 +450,6 @@ def drive_upload():
             )
             folder_id = folder_create.json()['id']
         
-        # Upload file using multipart
         metadata = json.dumps({
             'name': file_name,
             'parents': [folder_id]
@@ -450,7 +476,6 @@ def drive_upload():
         if upload_response.status_code in [200, 201]:
             file_data = upload_response.json()
             
-            # Make file accessible via link
             requests.post(
                 f"https://www.googleapis.com/drive/v3/files/{file_data['id']}/permissions",
                 headers={**headers, 'Content-Type': 'application/json'},
@@ -474,7 +499,6 @@ def drive_upload():
         return jsonify({"error": str(e)}), 500
 
 
-# Initialize tables on import (for gunicorn)
 try:
     ensure_tables()
 except Exception as e:
