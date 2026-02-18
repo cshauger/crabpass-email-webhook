@@ -61,6 +61,11 @@ def ensure_tables():
             cur.execute("""
                 ALTER TABLE bots ADD COLUMN IF NOT EXISTS source TEXT
             """)
+            
+            # Add deleted_at timestamp for cleanup tracking
+            cur.execute("""
+                ALTER TABLE bots ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP
+            """)
             cur.execute("""
                 ALTER TABLE emails ALTER COLUMN bot_id DROP NOT NULL
             """)
@@ -643,7 +648,7 @@ def nuke_bot(bot_id):
                 bot_username = bot['bot_username']
                 
                 # Deactivate the bot
-                cur.execute("UPDATE bots SET is_active = false WHERE id = %s", (bot_id,))
+                cur.execute("UPDATE bots SET is_active = false, deleted_at = NOW() WHERE id = %s", (bot_id,))
                 
                 deleted = {"bot": bot_username, "deactivated": True}
                 
@@ -678,7 +683,7 @@ def nuke_bot_by_name(bot_username):
                 # Redirect to the ID-based endpoint logic
                 bot_id = bot['id']
                 
-                cur.execute("UPDATE bots SET is_active = false WHERE id = %s", (bot_id,))
+                cur.execute("UPDATE bots SET is_active = false, deleted_at = NOW() WHERE id = %s", (bot_id,))
                 deleted = {"bot": bot_username, "deactivated": True}
                 
                 if cleanup:
@@ -689,6 +694,50 @@ def nuke_bot_by_name(bot_username):
                 
                 conn.commit()
                 return jsonify({"status": "ok", "deleted": deleted})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/admin/cleanup-bots', methods=['POST'])
+def cleanup_bots():
+    """Purge bots that have been inactive for 30+ days"""
+    days = int(request.args.get('days', 30))
+    dry_run = request.args.get('dry_run', 'false').lower() == 'true'
+    
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                # Find bots to purge
+                cur.execute("""
+                    SELECT id, bot_username, deleted_at 
+                    FROM bots 
+                    WHERE is_active = false 
+                    AND deleted_at IS NOT NULL 
+                    AND deleted_at < NOW() - INTERVAL '%s days'
+                """, (days,))
+                to_purge = cur.fetchall()
+                
+                if dry_run:
+                    return jsonify({
+                        "dry_run": True,
+                        "would_purge": [{"id": b["id"], "username": b["bot_username"]} for b in to_purge]
+                    })
+                
+                purged = []
+                for bot in to_purge:
+                    bot_id = bot["id"]
+                    # Delete associated data
+                    cur.execute("DELETE FROM emails WHERE bot_id = %s", (bot_id,))
+                    cur.execute("DELETE FROM oauth_tokens WHERE bot_id = %s", (bot_id,))
+                    # Delete the bot record
+                    cur.execute("DELETE FROM bots WHERE id = %s", (bot_id,))
+                    purged.append(bot["bot_username"])
+                
+                conn.commit()
+                return jsonify({
+                    "status": "ok",
+                    "purged_count": len(purged),
+                    "purged_bots": purged
+                })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 try:
