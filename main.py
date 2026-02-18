@@ -590,6 +590,21 @@ def drive_upload():
         return jsonify({"error": str(e)}), 500
 
 
+
+@app.route('/bots', methods=['GET'])
+def list_bots():
+    """List all registered bots"""
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id, bot_username, user_id, is_active, created_at 
+                    FROM bots ORDER BY id DESC
+                """)
+                bots = [dict(row) for row in cur.fetchall()]
+                return jsonify({"bots": bots, "count": len(bots)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 try:
     ensure_tables()
 except Exception as e:
