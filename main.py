@@ -2,6 +2,7 @@
 Email + OAuth Webhook Service for CrabPass
 - Receives inbound emails via SendGrid
 - Handles Google Drive OAuth flow
+- Special handling for check@crabpass.ai (Check's inbox)
 """
 import os
 import re
@@ -24,6 +25,9 @@ GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 OAUTH_REDIRECT_URI = os.environ.get("OAUTH_REDIRECT_URI", "https://email-webhook-production-887d.up.railway.app/oauth/callback")
 
+# Check's special email address
+CHECK_EMAIL = "check@crabpass.ai"
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -36,7 +40,7 @@ def ensure_tables():
     """Create tables if they don't exist"""
     with get_db() as conn:
         with conn.cursor() as cur:
-            # Emails table - stores inbound emails for bots
+            # Emails table - bot_id is nullable for check@crabpass.ai
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS emails (
                     id SERIAL PRIMARY KEY,
@@ -51,12 +55,20 @@ def ensure_tables():
                 )
             """)
             
+            # Make bot_id nullable if it isn't already
+            cur.execute("""
+                ALTER TABLE emails ALTER COLUMN bot_id DROP NOT NULL
+            """)
+            
             # Index for fast bot email lookup
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_emails_bot_id ON emails(bot_id)
             """)
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_emails_unread ON emails(bot_id, is_read) WHERE is_read = FALSE
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_emails_check ON emails(to_email) WHERE bot_id IS NULL
             """)
             
             # OAuth tokens table
@@ -88,7 +100,7 @@ def ensure_tables():
             """)
             
             conn.commit()
-    logger.info("Tables ready (emails, oauth_tokens, oauth_state)")
+    logger.info("Tables ready (emails with nullable bot_id, oauth_tokens, oauth_state)")
 
 
 # ============== EMAIL FUNCTIONS ==============
@@ -99,6 +111,11 @@ def extract_bot_address(to_field):
     if match:
         return match.group(0)
     return None
+
+
+def is_check_email(email_address):
+    """Check if this is Check's special email"""
+    return email_address and email_address.lower() == CHECK_EMAIL
 
 
 def find_bot_by_email(email_address):
@@ -119,7 +136,7 @@ def find_bot_by_email(email_address):
 
 
 def store_email(bot_id, from_email, to_email, subject, body_plain, body_html):
-    """Store email in database"""
+    """Store email in database - bot_id can be None for check@crabpass.ai"""
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -286,6 +303,12 @@ def inbound_email():
             logger.warning(f"No valid crabpass.ai address found in: {to_email}")
             return jsonify({"status": "ignored", "reason": "no valid address"}), 200
         
+        # Special handling for Check's email
+        if is_check_email(bot_address):
+            email_id = store_email(None, from_email, to_email, subject, body_plain, body_html)
+            logger.info(f"Stored email {email_id} for Check (check@crabpass.ai)")
+            return jsonify({"status": "ok", "email_id": email_id, "recipient": "check"}), 200
+        
         bot_id = find_bot_by_email(bot_address)
         if not bot_id:
             logger.warning(f"No bot found for address: {bot_address}")
@@ -299,6 +322,74 @@ def inbound_email():
     except Exception as e:
         logger.error(f"Error processing email: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/emails/recent', methods=['GET'])
+def recent_emails():
+    """Get recent emails - for debugging"""
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id, bot_id, from_email, to_email, subject, body_plain, received_at 
+                    FROM emails ORDER BY id DESC LIMIT 10
+                """)
+                emails = [dict(row) for row in cur.fetchall()]
+                return jsonify({"emails": emails})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/check/emails', methods=['GET'])
+def check_emails():
+    """Get Check's emails (check@crabpass.ai)"""
+    try:
+        unread_only = request.args.get('unread', 'false').lower() == 'true'
+        limit = int(request.args.get('limit', 20))
+        
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                if unread_only:
+                    cur.execute("""
+                        SELECT id, from_email, to_email, subject, body_plain, is_read, received_at 
+                        FROM emails 
+                        WHERE bot_id IS NULL AND is_read = FALSE
+                        ORDER BY id DESC LIMIT %s
+                    """, (limit,))
+                else:
+                    cur.execute("""
+                        SELECT id, from_email, to_email, subject, body_plain, is_read, received_at 
+                        FROM emails 
+                        WHERE bot_id IS NULL
+                        ORDER BY id DESC LIMIT %s
+                    """, (limit,))
+                
+                emails = [dict(row) for row in cur.fetchall()]
+                return jsonify({"emails": emails, "count": len(emails)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/check/emails/<int:email_id>/read', methods=['POST'])
+def mark_check_email_read(email_id):
+    """Mark one of Check's emails as read"""
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE emails SET is_read = TRUE 
+                    WHERE id = %s AND bot_id IS NULL
+                    RETURNING id
+                """, (email_id,))
+                result = cur.fetchone()
+                conn.commit()
+                
+                if result:
+                    return jsonify({"status": "ok", "marked_read": email_id})
+                else:
+                    return jsonify({"error": "Email not found or not Check's"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route('/oauth/start', methods=['GET'])
@@ -497,19 +588,6 @@ def drive_upload():
     except Exception as e:
         logger.error(f"Drive upload error: {e}")
         return jsonify({"error": str(e)}), 500
-
-@app.route('/emails/recent', methods=['GET'])
-def recent_emails():
-    """Get recent emails - temporary debug endpoint"""
-    try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT id, from_email, to_email, subject, body_plain, received_at FROM emails ORDER BY id DESC LIMIT 10")
-                emails = cur.fetchall()
-                return jsonify({"emails": emails})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
 
 
 try:
