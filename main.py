@@ -56,6 +56,11 @@ def ensure_tables():
             """)
             
             # Make bot_id nullable if it isn't already
+            
+            # Add source column to track which bot created each registration
+            cur.execute("""
+                ALTER TABLE bots ADD COLUMN IF NOT EXISTS source TEXT
+            """)
             cur.execute("""
                 ALTER TABLE emails ALTER COLUMN bot_id DROP NOT NULL
             """)
