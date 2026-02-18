@@ -625,6 +625,72 @@ def backfill_sources():
                 return jsonify({"status": "ok", "message": "Sources backfilled"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/admin/nuke-bot/<int:bot_id>', methods=['DELETE'])
+def nuke_bot(bot_id):
+    """Deactivate a bot and optionally clean up its data"""
+    cleanup = request.args.get('cleanup', 'false').lower() == 'true'
+    
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                # Get bot info first
+                cur.execute("SELECT bot_username FROM bots WHERE id = %s", (bot_id,))
+                bot = cur.fetchone()
+                if not bot:
+                    return jsonify({"error": "Bot not found"}), 404
+                
+                bot_username = bot['bot_username']
+                
+                # Deactivate the bot
+                cur.execute("UPDATE bots SET is_active = false WHERE id = %s", (bot_id,))
+                
+                deleted = {"bot": bot_username, "deactivated": True}
+                
+                if cleanup:
+                    # Delete related emails
+                    cur.execute("DELETE FROM emails WHERE bot_id = %s", (bot_id,))
+                    deleted["emails_deleted"] = cur.rowcount
+                    
+                    # Delete OAuth tokens
+                    cur.execute("DELETE FROM oauth_tokens WHERE bot_id = %s", (bot_id,))
+                    deleted["oauth_deleted"] = cur.rowcount
+                
+                conn.commit()
+                return jsonify({"status": "ok", "deleted": deleted})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin/nuke-bot-by-name/<bot_username>', methods=['DELETE'])
+def nuke_bot_by_name(bot_username):
+    """Deactivate a bot by username"""
+    cleanup = request.args.get('cleanup', 'false').lower() == 'true'
+    
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM bots WHERE LOWER(bot_username) = LOWER(%s)", (bot_username,))
+                bot = cur.fetchone()
+                if not bot:
+                    return jsonify({"error": "Bot not found"}), 404
+                
+                # Redirect to the ID-based endpoint logic
+                bot_id = bot['id']
+                
+                cur.execute("UPDATE bots SET is_active = false WHERE id = %s", (bot_id,))
+                deleted = {"bot": bot_username, "deactivated": True}
+                
+                if cleanup:
+                    cur.execute("DELETE FROM emails WHERE bot_id = %s", (bot_id,))
+                    deleted["emails_deleted"] = cur.rowcount
+                    cur.execute("DELETE FROM oauth_tokens WHERE bot_id = %s", (bot_id,))
+                    deleted["oauth_deleted"] = cur.rowcount
+                
+                conn.commit()
+                return jsonify({"status": "ok", "deleted": deleted})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 try:
     ensure_tables()
 except Exception as e:
