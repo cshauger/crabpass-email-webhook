@@ -498,6 +498,19 @@ def drive_upload():
         logger.error(f"Drive upload error: {e}")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/emails/recent', methods=['GET'])
+def recent_emails():
+    """Get recent emails - temporary debug endpoint"""
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, from_email, to_email, subject, body_plain, received_at FROM emails ORDER BY id DESC LIMIT 10")
+                emails = cur.fetchall()
+                return jsonify({"emails": emails})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 
 try:
     ensure_tables()
