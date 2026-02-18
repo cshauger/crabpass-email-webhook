@@ -65,6 +65,31 @@ def ensure_tables():
             # Add deleted_at timestamp for cleanup tracking
             cur.execute("""
                 ALTER TABLE bots ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP
+            
+            # Config management columns
+            cur.execute("""
+                ALTER TABLE bots ADD COLUMN IF NOT EXISTS config JSONB DEFAULT '{}'
+            """)
+            cur.execute("""
+                ALTER TABLE bots ADD COLUMN IF NOT EXISTS tier VARCHAR(20) DEFAULT 'free'
+            """)
+            cur.execute("""
+                ALTER TABLE bots ADD COLUMN IF NOT EXISTS features JSONB DEFAULT '{}'
+            """)
+            
+            # Future cert fields (reserved for ClawSign)
+            cur.execute("""
+                ALTER TABLE bots ADD COLUMN IF NOT EXISTS cert_fingerprint VARCHAR(64)
+            """)
+            cur.execute("""
+                ALTER TABLE bots ADD COLUMN IF NOT EXISTS cert_issued_at TIMESTAMP
+            """)
+            cur.execute("""
+                ALTER TABLE bots ADD COLUMN IF NOT EXISTS cert_expires_at TIMESTAMP
+            """)
+            cur.execute("""
+                ALTER TABLE bots ADD COLUMN IF NOT EXISTS cert_data TEXT
+            """)
             """)
             cur.execute("""
                 ALTER TABLE emails ALTER COLUMN bot_id DROP NOT NULL
