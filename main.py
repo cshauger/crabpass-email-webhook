@@ -50,7 +50,7 @@ def ensure_tables():
                     subject TEXT,
                     body_plain TEXT,
                     body_html TEXT,
-                    is_read BOOLEAN DEFAULT FALSE,
+                    read BOOLEAN DEFAULT FALSE,
                     received_at TIMESTAMP DEFAULT NOW()
                 )
             """)
@@ -65,7 +65,7 @@ def ensure_tables():
                 CREATE INDEX IF NOT EXISTS idx_emails_bot_id ON emails(bot_id)
             """)
             cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_emails_unread ON emails(bot_id, is_read) WHERE is_read = FALSE
+                CREATE INDEX IF NOT EXISTS idx_emails_unread ON emails(bot_id, read) WHERE read = FALSE
             """)
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_emails_check ON emails(to_email) WHERE bot_id IS NULL
@@ -351,14 +351,14 @@ def check_emails():
             with conn.cursor() as cur:
                 if unread_only:
                     cur.execute("""
-                        SELECT id, from_email, to_email, subject, body_plain, is_read, received_at 
+                        SELECT id, from_email, to_email, subject, body_plain, read, received_at 
                         FROM emails 
-                        WHERE bot_id IS NULL AND is_read = FALSE
+                        WHERE bot_id IS NULL AND read = FALSE
                         ORDER BY id DESC LIMIT %s
                     """, (limit,))
                 else:
                     cur.execute("""
-                        SELECT id, from_email, to_email, subject, body_plain, is_read, received_at 
+                        SELECT id, from_email, to_email, subject, body_plain, read, received_at 
                         FROM emails 
                         WHERE bot_id IS NULL
                         ORDER BY id DESC LIMIT %s
@@ -377,7 +377,7 @@ def mark_check_email_read(email_id):
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    UPDATE emails SET is_read = TRUE 
+                    UPDATE emails SET read = TRUE 
                     WHERE id = %s AND bot_id IS NULL
                     RETURNING id
                 """, (email_id,))
