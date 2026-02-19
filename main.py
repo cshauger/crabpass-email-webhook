@@ -267,7 +267,7 @@ def list_bots():
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT id, bot_username, owner_id, is_active, created_at FROM bots ORDER BY id")
+                cur.execute("SELECT id, bot_username, user_id, is_active, created_at FROM bots ORDER BY id")
                 bots = cur.fetchall()
                 return jsonify({"bots": [dict(b) for b in bots]})
     except Exception as e:
