@@ -281,6 +281,7 @@ def register_bot():
     data = request.json
     bot_username = data.get('bot_username')
     user_id = data.get('user_id')
+    bot_token = data.get('bot_token', 'external')  # 'external' for OpenClaw-deployed bots
     
     if not bot_username or not user_id:
         return jsonify({"error": "Must provide bot_username and user_id"}), 400
@@ -289,8 +290,8 @@ def register_bot():
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO bots (bot_username, user_id, is_active) VALUES (%s, %s, true) RETURNING id",
-                    (bot_username, user_id)
+                    "INSERT INTO bots (bot_username, user_id, bot_token, is_active) VALUES (%s, %s, %s, true) RETURNING id",
+                    (bot_username, user_id, bot_token)
                 )
                 bot_id = cur.fetchone()['id']
                 conn.commit()
