@@ -65,6 +65,7 @@ def ensure_tables():
             # Add deleted_at timestamp for cleanup tracking
             cur.execute("""
                 ALTER TABLE bots ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP
+            """)
             
             # Config management columns
             cur.execute("""
@@ -89,7 +90,7 @@ def ensure_tables():
             """)
             cur.execute("""
                 ALTER TABLE bots ADD COLUMN IF NOT EXISTS cert_data TEXT
-            """)
+            
             """)
             cur.execute("""
                 ALTER TABLE emails ALTER COLUMN bot_id DROP NOT NULL
