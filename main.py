@@ -261,6 +261,20 @@ def health():
     return jsonify({"status": "ok"})
 
 
+@app.route('/bots', methods=['GET'])
+def list_bots():
+    """List all registered bots"""
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, bot_username, owner_id, is_active, created_at FROM bots ORDER BY id")
+                bots = cur.fetchall()
+                return jsonify({"bots": [dict(b) for b in bots]})
+    except Exception as e:
+        logger.error(f"Error listing bots: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/inbound-email', methods=['POST'])
 def inbound_email():
     """Handle inbound email from SendGrid"""
@@ -454,9 +468,6 @@ def drive_upload():
             'name': file_name,
             'parents': [folder_id]
         }
-        
-        # Use multipart upload
-        from requests_toolbelt.multipart.encoder import MultipartEncoder
         
         # Simple upload for files < 5MB
         if len(file_content) < 5 * 1024 * 1024:
