@@ -1,4 +1,5 @@
-flask
+-e flask
 gunicorn
 psycopg2-binary
 requests
+requests-toolbelt
