@@ -275,6 +275,31 @@ def list_bots():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/bots', methods=['POST'])
+def register_bot():
+    """Register a new bot"""
+    data = request.json
+    bot_username = data.get('bot_username')
+    user_id = data.get('user_id')
+    
+    if not bot_username or not user_id:
+        return jsonify({"error": "Must provide bot_username and user_id"}), 400
+    
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO bots (bot_username, user_id, is_active) VALUES (%s, %s, true) RETURNING id",
+                    (bot_username, user_id)
+                )
+                bot_id = cur.fetchone()['id']
+                conn.commit()
+                return jsonify({"status": "ok", "bot_id": bot_id, "email": f"{bot_username.lower()}@crabpass.ai"})
+    except Exception as e:
+        logger.error(f"Error registering bot: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/inbound-email', methods=['POST'])
 def inbound_email():
     """Handle inbound email from SendGrid"""
@@ -305,6 +330,59 @@ def inbound_email():
     except Exception as e:
         logger.error(f"Error processing email: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/emails', methods=['GET'])
+def get_emails():
+    """Get emails for a bot"""
+    bot_username = request.args.get('bot_username')
+    bot_id = request.args.get('bot_id')
+    unread_only = request.args.get('unread_only', 'false').lower() == 'true'
+    limit = int(request.args.get('limit', 20))
+    
+    if not bot_username and not bot_id:
+        return jsonify({"error": "Must provide bot_username or bot_id"}), 400
+    
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                # Get bot_id if username provided
+                if bot_username and not bot_id:
+                    cur.execute("SELECT id FROM bots WHERE LOWER(bot_username) = %s", (bot_username.lower(),))
+                    row = cur.fetchone()
+                    if not row:
+                        return jsonify({"error": "Bot not found", "emails": []}), 404
+                    bot_id = row['id']
+                
+                # Fetch emails
+                query = "SELECT id, from_email, to_email, subject, body_plain, received_at, read FROM emails WHERE bot_id = %s"
+                if unread_only:
+                    query += " AND read = false"
+                query += " ORDER BY received_at DESC LIMIT %s"
+                
+                cur.execute(query, (bot_id, limit))
+                emails = cur.fetchall()
+                
+                return jsonify({"emails": [dict(e) for e in emails]})
+    except Exception as e:
+        logger.error(f"Error fetching emails: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/emails/<int:email_id>/read', methods=['POST'])
+def mark_email_read(email_id):
+    """Mark an email as read"""
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE emails SET read = true WHERE id = %s RETURNING id", (email_id,))
+                if cur.fetchone():
+                    conn.commit()
+                    return jsonify({"status": "ok"})
+                return jsonify({"error": "Email not found"}), 404
+    except Exception as e:
+        logger.error(f"Error marking email read: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route('/oauth/start', methods=['GET'])
