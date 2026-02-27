@@ -455,6 +455,7 @@ def drive_upload():
         return jsonify({"error": str(e)}), 500
 
 
+# Migration trigger: 20260227162613
 if __name__ == '__main__':
     logger.info("Starting webhook service...")
     ensure_tables()
