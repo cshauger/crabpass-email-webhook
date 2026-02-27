@@ -20,7 +20,6 @@ app = Flask(__name__)
 DATABASE_URL = os.environ.get("DATABASE_URL")
 SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY")
 
-# Google OAuth settings
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 OAUTH_REDIRECT_URI = os.environ.get("OAUTH_REDIRECT_URI", "https://email-webhook-production-887d.up.railway.app/oauth/callback")
@@ -34,64 +33,35 @@ def get_db():
 
 
 def ensure_tables():
-    """Create tables if they don't exist"""
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS emails (
-                    id SERIAL PRIMARY KEY,
-                    bot_id INTEGER REFERENCES bots(id),
-                    from_email TEXT NOT NULL,
-                    to_email TEXT NOT NULL,
-                    subject TEXT,
-                    body_plain TEXT,
-                    body_html TEXT,
-                    received_at TIMESTAMP DEFAULT NOW(),
-                    read BOOLEAN DEFAULT FALSE,
-                    notified BOOLEAN DEFAULT FALSE
-                )
+                    id SERIAL PRIMARY KEY, bot_id INTEGER REFERENCES bots(id),
+                    from_email TEXT NOT NULL, to_email TEXT NOT NULL, subject TEXT,
+                    body_plain TEXT, body_html TEXT, received_at TIMESTAMP DEFAULT NOW(),
+                    read BOOLEAN DEFAULT FALSE, notified BOOLEAN DEFAULT FALSE)
             """)
-            
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS sent_emails (
-                    id SERIAL PRIMARY KEY,
-                    bot_id INTEGER REFERENCES bots(id),
-                    from_email TEXT NOT NULL,
-                    to_email TEXT NOT NULL,
-                    subject TEXT,
-                    body_plain TEXT,
-                    body_html TEXT,
-                    sent_at TIMESTAMP DEFAULT NOW(),
-                    status TEXT DEFAULT 'sent'
-                )
+                    id SERIAL PRIMARY KEY, bot_id INTEGER REFERENCES bots(id),
+                    from_email TEXT NOT NULL, to_email TEXT NOT NULL, subject TEXT,
+                    body_plain TEXT, body_html TEXT, sent_at TIMESTAMP DEFAULT NOW(),
+                    status TEXT DEFAULT 'sent')
             """)
-            
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS oauth_tokens (
-                    id SERIAL PRIMARY KEY,
-                    bot_id INTEGER REFERENCES bots(id),
-                    user_id BIGINT NOT NULL,
-                    provider TEXT NOT NULL,
-                    access_token TEXT NOT NULL,
-                    refresh_token TEXT,
-                    expires_at TIMESTAMP,
-                    scope TEXT,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    updated_at TIMESTAMP DEFAULT NOW(),
-                    UNIQUE(bot_id, user_id, provider)
-                )
+                    id SERIAL PRIMARY KEY, bot_id INTEGER REFERENCES bots(id),
+                    user_id BIGINT NOT NULL, provider TEXT NOT NULL,
+                    access_token TEXT NOT NULL, refresh_token TEXT, expires_at TIMESTAMP,
+                    scope TEXT, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW(),
+                    UNIQUE(bot_id, user_id, provider))
             """)
-            
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS oauth_state (
-                    state TEXT PRIMARY KEY,
-                    bot_id INTEGER NOT NULL,
-                    user_id BIGINT NOT NULL,
-                    provider TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT NOW()
-                )
+                    state TEXT PRIMARY KEY, bot_id INTEGER NOT NULL, user_id BIGINT NOT NULL,
+                    provider TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW())
             """)
-            
             conn.commit()
     logger.info("Tables ready")
 
@@ -122,11 +92,8 @@ def find_bot_by_username(username):
 def store_email(bot_id, from_email, to_email, subject, body_plain, body_html):
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """INSERT INTO emails (bot_id, from_email, to_email, subject, body_plain, body_html)
-                   VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
-                (bot_id, from_email, to_email, subject, body_plain, body_html)
-            )
+            cur.execute("INSERT INTO emails (bot_id, from_email, to_email, subject, body_plain, body_html) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                (bot_id, from_email, to_email, subject, body_plain, body_html))
             email_id = cur.fetchone()['id']
             conn.commit()
             return email_id
@@ -135,11 +102,8 @@ def store_email(bot_id, from_email, to_email, subject, body_plain, body_html):
 def store_sent_email(bot_id, from_email, to_email, subject, body_plain, body_html, status='sent'):
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """INSERT INTO sent_emails (bot_id, from_email, to_email, subject, body_plain, body_html, status)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-                (bot_id, from_email, to_email, subject, body_plain, body_html, status)
-            )
+            cur.execute("INSERT INTO sent_emails (bot_id, from_email, to_email, subject, body_plain, body_html, status) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                (bot_id, from_email, to_email, subject, body_plain, body_html, status))
             email_id = cur.fetchone()['id']
             conn.commit()
             return email_id
@@ -148,27 +112,22 @@ def store_sent_email(bot_id, from_email, to_email, subject, body_plain, body_htm
 def send_email_via_sendgrid(from_email, from_name, to_email, subject, body_plain, body_html=None):
     if not SENDGRID_API_KEY:
         return False, "SendGrid API key not configured"
-    
     payload = {
         "personalizations": [{"to": [{"email": to_email}]}],
         "from": {"email": from_email, "name": from_name},
         "subject": subject,
         "content": []
     }
-    
     if body_plain:
         payload["content"].append({"type": "text/plain", "value": body_plain})
     if body_html:
         payload["content"].append({"type": "text/html", "value": body_html})
     if not payload["content"]:
         payload["content"].append({"type": "text/plain", "value": ""})
-    
     try:
-        response = requests.post(
-            "https://api.sendgrid.com/v3/mail/send",
+        response = requests.post("https://api.sendgrid.com/v3/mail/send",
             headers={"Authorization": f"Bearer {SENDGRID_API_KEY}", "Content-Type": "application/json"},
-            json=payload
-        )
+            json=payload)
         if response.status_code in [200, 201, 202]:
             return True, "sent"
         logger.error(f"SendGrid error: {response.status_code} - {response.text}")
@@ -176,3 +135,327 @@ def send_email_via_sendgrid(from_email, from_name, to_email, subject, body_plain
     except Exception as e:
         logger.error(f"SendGrid exception: {e}")
         return False, str(e)
+
+
+def create_oauth_state(bot_id, user_id, provider):
+    state = secrets.token_urlsafe(32)
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM oauth_state WHERE created_at < NOW() - INTERVAL '10 minutes'")
+            cur.execute("INSERT INTO oauth_state (state, bot_id, user_id, provider) VALUES (%s, %s, %s, %s)", (state, bot_id, user_id, provider))
+            conn.commit()
+    return state
+
+
+def verify_oauth_state(state):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT bot_id, user_id, provider FROM oauth_state WHERE state = %s AND created_at > NOW() - INTERVAL '10 minutes'", (state,))
+            row = cur.fetchone()
+            if row:
+                cur.execute("DELETE FROM oauth_state WHERE state = %s", (state,))
+                conn.commit()
+                return row
+            return None
+
+
+def store_oauth_token(bot_id, user_id, provider, access_token, refresh_token, expires_in, scope):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""INSERT INTO oauth_tokens (bot_id, user_id, provider, access_token, refresh_token, expires_at, scope)
+                VALUES (%s, %s, %s, %s, %s, NOW() + INTERVAL '%s seconds', %s)
+                ON CONFLICT (bot_id, user_id, provider) DO UPDATE SET 
+                    access_token = EXCLUDED.access_token, refresh_token = COALESCE(EXCLUDED.refresh_token, oauth_tokens.refresh_token),
+                    expires_at = EXCLUDED.expires_at, scope = EXCLUDED.scope, updated_at = NOW()""",
+                (bot_id, user_id, provider, access_token, refresh_token, expires_in or 3600, scope))
+            conn.commit()
+
+
+def get_oauth_token(bot_id, user_id, provider):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM oauth_tokens WHERE bot_id = %s AND user_id = %s AND provider = %s", (bot_id, user_id, provider))
+            token = cur.fetchone()
+            if not token:
+                return None
+            cur.execute("SELECT expires_at < NOW() + INTERVAL '5 minutes' as needs_refresh FROM oauth_tokens WHERE id = %s", (token['id'],))
+            needs_refresh = cur.fetchone()['needs_refresh']
+            if needs_refresh and token['refresh_token']:
+                new_token = refresh_google_token(token['refresh_token'])
+                if new_token:
+                    store_oauth_token(bot_id, user_id, provider, new_token['access_token'], new_token.get('refresh_token'), new_token.get('expires_in'), token['scope'])
+                    return new_token['access_token']
+            return token['access_token']
+
+
+def refresh_google_token(refresh_token):
+    try:
+        response = requests.post('https://oauth2.googleapis.com/token', data={
+            'client_id': GOOGLE_CLIENT_ID, 'client_secret': GOOGLE_CLIENT_SECRET,
+            'refresh_token': refresh_token, 'grant_type': 'refresh_token'})
+        return response.json() if response.status_code == 200 else None
+    except Exception as e:
+        logger.error(f"Token refresh error: {e}")
+        return None
+
+
+def get_google_auth_url(bot_id, user_id):
+    state = create_oauth_state(bot_id, user_id, 'google')
+    params = {'client_id': GOOGLE_CLIENT_ID, 'redirect_uri': OAUTH_REDIRECT_URI, 'response_type': 'code',
+        'scope': 'https://www.googleapis.com/auth/drive.file', 'access_type': 'offline', 'prompt': 'consent', 'state': state}
+    return 'https://accounts.google.com/o/oauth2/v2/auth?' + urlencode(params)
+
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({"status": "ok"})
+
+
+@app.route('/bots', methods=['GET'])
+def list_bots():
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, bot_username, user_id, is_active, created_at FROM bots ORDER BY id")
+                return jsonify({"bots": [dict(b) for b in cur.fetchall()]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/bots', methods=['POST'])
+def register_bot():
+    data = request.json
+    bot_username, user_id = data.get('bot_username'), data.get('user_id')
+    bot_token = data.get('bot_token', 'external')
+    if not bot_username or not user_id:
+        return jsonify({"error": "Must provide bot_username and user_id"}), 400
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO bots (bot_username, user_id, bot_token, is_active) VALUES (%s, %s, %s, true) RETURNING id", (bot_username, user_id, bot_token))
+                bot_id = cur.fetchone()['id']
+                conn.commit()
+                return jsonify({"status": "ok", "bot_id": bot_id, "email": f"{bot_username.lower()}@crabpass.ai"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/inbound-email', methods=['POST'])
+def inbound_email():
+    try:
+        from_email, to_email = request.form.get('from', ''), request.form.get('to', '')
+        subject, body_plain, body_html = request.form.get('subject', ''), request.form.get('text', ''), request.form.get('html', '')
+        logger.info(f"Received email: from={from_email}, to={to_email}, subject={subject}")
+        bot_address = extract_bot_address(to_email)
+        if not bot_address:
+            return jsonify({"status": "ignored", "reason": "no valid address"}), 200
+        bot_id = find_bot_by_email(bot_address)
+        if not bot_id:
+            return jsonify({"status": "ignored", "reason": "bot not found"}), 200
+        email_id = store_email(bot_id, from_email, to_email, subject, body_plain, body_html)
+        logger.info(f"Stored email {email_id} for bot {bot_id}")
+        return jsonify({"status": "ok", "email_id": email_id}), 200
+    except Exception as e:
+        logger.error(f"Error processing email: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/emails', methods=['GET'])
+def get_emails():
+    bot_username, bot_id = request.args.get('bot_username'), request.args.get('bot_id')
+    unread_only = request.args.get('unread_only', 'false').lower() == 'true'
+    limit = int(request.args.get('limit', 20))
+    if not bot_username and not bot_id:
+        return jsonify({"error": "Must provide bot_username or bot_id"}), 400
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                if bot_username and not bot_id:
+                    cur.execute("SELECT id FROM bots WHERE LOWER(bot_username) = %s", (bot_username.lower(),))
+                    row = cur.fetchone()
+                    if not row:
+                        return jsonify({"error": "Bot not found", "emails": []}), 404
+                    bot_id = row['id']
+                query = "SELECT id, from_email, to_email, subject, body_plain, received_at, read FROM emails WHERE bot_id = %s"
+                if unread_only:
+                    query += " AND read = false"
+                query += " ORDER BY received_at DESC LIMIT %s"
+                cur.execute(query, (bot_id, limit))
+                return jsonify({"emails": [dict(e) for e in cur.fetchall()]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/emails/<int:email_id>/read', methods=['POST'])
+def mark_email_read(email_id):
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE emails SET read = true WHERE id = %s RETURNING id", (email_id,))
+                if cur.fetchone():
+                    conn.commit()
+                    return jsonify({"status": "ok"})
+                return jsonify({"error": "Email not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/send', methods=['POST'])
+def send_email():
+    """Send an email on behalf of a bot"""
+    data = request.json
+    if not data:
+        return jsonify({"error": "JSON body required"}), 400
+    bot_username, bot_id = data.get('bot_username'), data.get('bot_id')
+    to_email, subject = data.get('to'), data.get('subject', '')
+    body_plain = data.get('body') or data.get('body_plain', '')
+    body_html, from_name = data.get('body_html'), data.get('from_name')
+    if not to_email:
+        return jsonify({"error": "Missing 'to' field"}), 400
+    if not bot_username and not bot_id:
+        return jsonify({"error": "Must provide bot_username or bot_id"}), 400
+    try:
+        if bot_username:
+            bot = find_bot_by_username(bot_username)
+            if not bot:
+                return jsonify({"error": f"Bot not found: {bot_username}"}), 404
+            bot_id, bot_username = bot['id'], bot['bot_username']
+        else:
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT id, bot_username FROM bots WHERE id = %s AND is_active = true", (bot_id,))
+                    bot = cur.fetchone()
+                    if not bot:
+                        return jsonify({"error": f"Bot not found: {bot_id}"}), 404
+                    bot_username = bot['bot_username']
+        from_email = f"{bot_username.lower()}@crabpass.ai"
+        from_name = from_name or bot_username
+        success, message = send_email_via_sendgrid(from_email, from_name, to_email, subject, body_plain, body_html)
+        status = 'sent' if success else f'failed: {message}'
+        store_sent_email(bot_id, from_email, to_email, subject, body_plain, body_html, status)
+        if success:
+            logger.info(f"Email sent: {from_email} -> {to_email}, subject: {subject}")
+            return jsonify({"status": "ok", "message": "Email sent successfully"})
+        logger.error(f"Email failed: {from_email} -> {to_email}, error: {message}")
+        return jsonify({"status": "error", "message": message}), 500
+    except Exception as e:
+        logger.error(f"Error sending email: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/sent', methods=['GET'])
+def get_sent_emails():
+    bot_username, bot_id = request.args.get('bot_username'), request.args.get('bot_id')
+    limit = int(request.args.get('limit', 20))
+    if not bot_username and not bot_id:
+        return jsonify({"error": "Must provide bot_username or bot_id"}), 400
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                if bot_username and not bot_id:
+                    cur.execute("SELECT id FROM bots WHERE LOWER(bot_username) = %s", (bot_username.lower(),))
+                    row = cur.fetchone()
+                    if not row:
+                        return jsonify({"error": "Bot not found", "emails": []}), 404
+                    bot_id = row['id']
+                cur.execute("SELECT id, from_email, to_email, subject, body_plain, sent_at, status FROM sent_emails WHERE bot_id = %s ORDER BY sent_at DESC LIMIT %s", (bot_id, limit))
+                return jsonify({"emails": [dict(e) for e in cur.fetchall()]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/oauth/start', methods=['GET'])
+def oauth_start():
+    bot_id, user_id = request.args.get('bot_id'), request.args.get('user_id')
+    provider = request.args.get('provider', 'google')
+    if not bot_id or not user_id:
+        return jsonify({"error": "Missing bot_id or user_id"}), 400
+    if provider == 'google':
+        if not GOOGLE_CLIENT_ID:
+            return jsonify({"error": "Google OAuth not configured"}), 500
+        return jsonify({"auth_url": get_google_auth_url(int(bot_id), int(user_id))})
+    return jsonify({"error": f"Unknown provider: {provider}"}), 400
+
+
+@app.route('/oauth/callback', methods=['GET'])
+def oauth_callback():
+    code, state, error = request.args.get('code'), request.args.get('state'), request.args.get('error')
+    if error:
+        return f"<html><body><h1>Connection Failed</h1><p>Error: {error}</p></body></html>", 400
+    if not code or not state:
+        return "Missing code or state", 400
+    state_data = verify_oauth_state(state)
+    if not state_data:
+        return "Invalid or expired state", 400
+    try:
+        response = requests.post('https://oauth2.googleapis.com/token', data={
+            'client_id': GOOGLE_CLIENT_ID, 'client_secret': GOOGLE_CLIENT_SECRET,
+            'code': code, 'grant_type': 'authorization_code', 'redirect_uri': OAUTH_REDIRECT_URI})
+        if response.status_code != 200:
+            return f"Token exchange failed: {response.text}", 400
+        token_data = response.json()
+        store_oauth_token(state_data['bot_id'], state_data['user_id'], state_data['provider'],
+            token_data['access_token'], token_data.get('refresh_token'), token_data.get('expires_in'), token_data.get('scope', ''))
+        return "<html><body><h1>Google Drive Connected!</h1><p>You can close this window.</p></body></html>"
+    except Exception as e:
+        return f"Error: {e}", 500
+
+
+@app.route('/oauth/status', methods=['GET'])
+def oauth_status():
+    bot_id, user_id = request.args.get('bot_id'), request.args.get('user_id')
+    provider = request.args.get('provider', 'google')
+    if not bot_id or not user_id:
+        return jsonify({"error": "Missing bot_id or user_id"}), 400
+    return jsonify({"connected": get_oauth_token(int(bot_id), int(user_id), provider) is not None, "provider": provider})
+
+
+@app.route('/drive/upload', methods=['POST'])
+def drive_upload():
+    data = request.json
+    bot_id, user_id = data.get('bot_id'), data.get('user_id')
+    file_name, file_url = data.get('file_name'), data.get('file_url')
+    folder_name = data.get('folder_name', 'CrabPass')
+    if not all([bot_id, user_id, file_name, file_url]):
+        return jsonify({"error": "Missing required fields"}), 400
+    token = get_oauth_token(int(bot_id), int(user_id), 'google')
+    if not token:
+        return jsonify({"error": "Not connected to Google Drive"}), 401
+    try:
+        file_response = requests.get(file_url)
+        if file_response.status_code != 200:
+            return jsonify({"error": "Failed to download file"}), 400
+        file_content = file_response.content
+        headers = {'Authorization': f'Bearer {token}'}
+        folder_query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        folder_response = requests.get(f"https://www.googleapis.com/drive/v3/files?q={folder_query}", headers=headers)
+        folders = folder_response.json().get('files', [])
+        if folders:
+            folder_id = folders[0]['id']
+        else:
+            folder_create = requests.post('https://www.googleapis.com/drive/v3/files',
+                headers={**headers, 'Content-Type': 'application/json'},
+                json={'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder'})
+            folder_id = folder_create.json()['id']
+        metadata = {'name': file_name, 'parents': [folder_id]}
+        if len(file_content) < 5 * 1024 * 1024:
+            upload_response = requests.post('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+                headers=headers, files={'metadata': ('metadata', json.dumps(metadata), 'application/json'), 'file': (file_name, file_content)})
+        else:
+            upload_response = requests.post('https://www.googleapis.com/upload/drive/v3/files?uploadType=media',
+                headers={**headers, 'Content-Type': 'application/octet-stream'}, data=file_content, params={'name': file_name, 'parents': folder_id})
+        if upload_response.status_code in [200, 201]:
+            file_data = upload_response.json()
+            requests.post(f"https://www.googleapis.com/drive/v3/files/{file_data['id']}/permissions",
+                headers={**headers, 'Content-Type': 'application/json'}, json={'type': 'anyone', 'role': 'reader'})
+            return jsonify({"status": "ok", "file_id": file_data['id'], "file_name": file_data.get('name'),
+                "web_link": f"https://drive.google.com/file/d/{file_data['id']}/view"})
+        return jsonify({"error": "Upload failed"}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+if __name__ == '__main__':
+    logger.info("Starting webhook service...")
+    ensure_tables()
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
