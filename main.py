@@ -42,8 +42,10 @@ def ensure_tables():
                     body_plain TEXT, body_html TEXT, received_at TIMESTAMP DEFAULT NOW(),
                     read BOOLEAN DEFAULT FALSE, notified BOOLEAN DEFAULT FALSE)
             """)
+            # Drop and recreate sent_emails to fix schema issues
+            cur.execute("DROP TABLE IF EXISTS sent_emails")
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS sent_emails (
+                CREATE TABLE sent_emails (
                     id SERIAL PRIMARY KEY, bot_id INTEGER REFERENCES bots(id),
                     from_email TEXT NOT NULL, to_email TEXT NOT NULL, subject TEXT,
                     body_plain TEXT, body_html TEXT, sent_at TIMESTAMP DEFAULT NOW(),
@@ -455,7 +457,6 @@ def drive_upload():
         return jsonify({"error": str(e)}), 500
 
 
-# Migration trigger: 20260227162613
 if __name__ == '__main__':
     logger.info("Starting webhook service...")
     ensure_tables()
