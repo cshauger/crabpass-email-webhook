@@ -213,6 +213,26 @@ def health():
     return jsonify({"status": "ok"})
 
 
+@app.route('/migrate', methods=['POST'])
+def migrate():
+    """Force run migrations"""
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DROP TABLE IF EXISTS sent_emails")
+                cur.execute("""
+                    CREATE TABLE sent_emails (
+                        id SERIAL PRIMARY KEY, bot_id INTEGER REFERENCES bots(id),
+                        from_email TEXT NOT NULL, to_email TEXT NOT NULL, subject TEXT,
+                        body_plain TEXT, body_html TEXT, sent_at TIMESTAMP DEFAULT NOW(),
+                        status TEXT DEFAULT 'sent')
+                """)
+                conn.commit()
+        return jsonify({"status": "ok", "message": "sent_emails table recreated"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/bots', methods=['GET'])
 def list_bots():
     try:
