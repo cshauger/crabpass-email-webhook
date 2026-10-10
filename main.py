@@ -1,16 +1,17 @@
 """
 Email + OAuth Webhook Service for CrabPass
-- Receives inbound emails via SendGrid
+- Receives inbound emails via SendGrid (WITH ATTACHMENTS)
 - Sends outbound emails via SendGrid
 - Handles Google Drive OAuth flow
 """
 import os
 import re
 import json
+import base64
 import logging
 import secrets
 from urllib.parse import urlencode
-from flask import Flask, request, jsonify, redirect
+from flask import Flask, request, jsonify, redirect, Response
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import requests
@@ -42,7 +43,17 @@ def ensure_tables():
                     body_plain TEXT, body_html TEXT, received_at TIMESTAMP DEFAULT NOW(),
                     read BOOLEAN DEFAULT FALSE, notified BOOLEAN DEFAULT FALSE)
             """)
-            # Drop and recreate sent_emails to fix schema issues
+            # Attachments table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS attachments (
+                    id SERIAL PRIMARY KEY,
+                    email_id INTEGER REFERENCES emails(id) ON DELETE CASCADE,
+                    filename TEXT NOT NULL,
+                    content_type TEXT,
+                    size INTEGER,
+                    data BYTEA NOT NULL,
+                    created_at TIMESTAMP DEFAULT NOW())
+            """)
             cur.execute("DROP TABLE IF EXISTS sent_emails")
             cur.execute("""
                 CREATE TABLE sent_emails (
@@ -65,7 +76,7 @@ def ensure_tables():
                     provider TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW())
             """)
             conn.commit()
-    logger.info("Tables ready")
+    logger.info("Tables ready (with attachments support)")
 
 
 def extract_bot_address(to_field):
@@ -99,6 +110,23 @@ def store_email(bot_id, from_email, to_email, subject, body_plain, body_html):
             email_id = cur.fetchone()['id']
             conn.commit()
             return email_id
+
+
+def store_attachment(email_id, filename, content_type, data):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO attachments (email_id, filename, content_type, size, data) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                (email_id, filename, content_type, len(data), psycopg2.Binary(data)))
+            attachment_id = cur.fetchone()['id']
+            conn.commit()
+            return attachment_id
+
+
+def get_attachments_for_email(email_id):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, filename, content_type, size FROM attachments WHERE email_id = %s", (email_id,))
+            return [dict(a) for a in cur.fetchall()]
 
 
 def store_sent_email(bot_id, from_email, to_email, subject, body_plain, body_html, status='sent'):
@@ -210,15 +238,26 @@ def get_google_auth_url(bot_id, user_id):
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "ok", "attachments_supported": True})
 
 
 @app.route('/migrate', methods=['POST'])
 def migrate():
-    """Force run migrations"""
+    """Force run migrations including attachments table"""
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
+                # Create attachments table if not exists
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS attachments (
+                        id SERIAL PRIMARY KEY,
+                        email_id INTEGER REFERENCES emails(id) ON DELETE CASCADE,
+                        filename TEXT NOT NULL,
+                        content_type TEXT,
+                        size INTEGER,
+                        data BYTEA NOT NULL,
+                        created_at TIMESTAMP DEFAULT NOW())
+                """)
                 cur.execute("DROP TABLE IF EXISTS sent_emails")
                 cur.execute("""
                     CREATE TABLE sent_emails (
@@ -228,7 +267,7 @@ def migrate():
                         status TEXT DEFAULT 'sent')
                 """)
                 conn.commit()
-        return jsonify({"status": "ok", "message": "sent_emails table recreated"})
+        return jsonify({"status": "ok", "message": "Tables migrated with attachments support"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -267,16 +306,70 @@ def inbound_email():
     try:
         from_email, to_email = request.form.get('from', ''), request.form.get('to', '')
         subject, body_plain, body_html = request.form.get('subject', ''), request.form.get('text', ''), request.form.get('html', '')
-        logger.info(f"Received email: from={from_email}, to={to_email}, subject={subject}")
+        
+        # Get attachment info from SendGrid
+        attachment_count = int(request.form.get('attachments', 0))
+        
+        logger.info(f"Received email: from={from_email}, to={to_email}, subject={subject}, attachments={attachment_count}")
+        
         bot_address = extract_bot_address(to_email)
         if not bot_address:
             return jsonify({"status": "ignored", "reason": "no valid address"}), 200
         bot_id = find_bot_by_email(bot_address)
         if not bot_id:
             return jsonify({"status": "ignored", "reason": "bot not found"}), 200
+        
         email_id = store_email(bot_id, from_email, to_email, subject, body_plain, body_html)
         logger.info(f"Stored email {email_id} for bot {bot_id}")
-        return jsonify({"status": "ok", "email_id": email_id}), 200
+        
+        # Process attachments
+        stored_attachments = []
+        for i in range(1, attachment_count + 1):
+            attachment_key = f'attachment{i}'
+            if attachment_key in request.files:
+                file = request.files[attachment_key]
+                filename = file.filename or f'attachment_{i}'
+                content_type = file.content_type or 'application/octet-stream'
+                data = file.read()
+                
+                attachment_id = store_attachment(email_id, filename, content_type, data)
+                stored_attachments.append({
+                    'id': attachment_id,
+                    'filename': filename,
+                    'content_type': content_type,
+                    'size': len(data)
+                })
+                logger.info(f"Stored attachment {attachment_id}: {filename} ({len(data)} bytes)")
+        
+        # Also check for attachments sent as form fields (base64 encoded)
+        attachment_info = request.form.get('attachment-info')
+        if attachment_info:
+            try:
+                info = json.loads(attachment_info)
+                for key, att_meta in info.items():
+                    if key in request.files:
+                        continue  # Already processed
+                    # Check for base64 content in form
+                    content_key = att_meta.get('content-id', key)
+                    if content_key in request.form:
+                        data = base64.b64decode(request.form[content_key])
+                        filename = att_meta.get('filename', att_meta.get('name', 'attachment'))
+                        content_type = att_meta.get('type', 'application/octet-stream')
+                        attachment_id = store_attachment(email_id, filename, content_type, data)
+                        stored_attachments.append({
+                            'id': attachment_id,
+                            'filename': filename,
+                            'size': len(data)
+                        })
+            except Exception as e:
+                logger.warning(f"Error processing attachment-info: {e}")
+        
+        return jsonify({
+            "status": "ok", 
+            "email_id": email_id,
+            "attachments_stored": len(stored_attachments),
+            "attachments": stored_attachments
+        }), 200
     except Exception as e:
         logger.error(f"Error processing email: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -286,6 +379,7 @@ def inbound_email():
 def get_emails():
     bot_username, bot_id = request.args.get('bot_username'), request.args.get('bot_id')
     unread_only = request.args.get('unread_only', 'false').lower() == 'true'
+    include_attachments = request.args.get('include_attachments', 'true').lower() == 'true'
     limit = int(request.args.get('limit', 20))
     if not bot_username and not bot_id:
         return jsonify({"error": "Must provide bot_username or bot_id"}), 400
@@ -303,7 +397,14 @@ def get_emails():
                     query += " AND read = false"
                 query += " ORDER BY received_at DESC LIMIT %s"
                 cur.execute(query, (bot_id, limit))
-                return jsonify({"emails": [dict(e) for e in cur.fetchall()]})
+                emails = [dict(e) for e in cur.fetchall()]
+                
+                # Add attachment info if requested
+                if include_attachments:
+                    for email in emails:
+                        email['attachments'] = get_attachments_for_email(email['id'])
+                
+                return jsonify({"emails": emails})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -318,6 +419,46 @@ def mark_email_read(email_id):
                     conn.commit()
                     return jsonify({"status": "ok"})
                 return jsonify({"error": "Email not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/attachments/<int:attachment_id>', methods=['GET'])
+def get_attachment(attachment_id):
+    """Download an attachment by ID"""
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT filename, content_type, data FROM attachments WHERE id = %s", (attachment_id,))
+                row = cur.fetchone()
+                if not row:
+                    return jsonify({"error": "Attachment not found"}), 404
+                
+                return Response(
+                    bytes(row['data']),
+                    mimetype=row['content_type'] or 'application/octet-stream',
+                    headers={'Content-Disposition': f'attachment; filename="{row["filename"]}"'}
+                )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/attachments/<int:attachment_id>/base64', methods=['GET'])
+def get_attachment_base64(attachment_id):
+    """Get attachment as base64 encoded string"""
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT filename, content_type, data FROM attachments WHERE id = %s", (attachment_id,))
+                row = cur.fetchone()
+                if not row:
+                    return jsonify({"error": "Attachment not found"}), 404
+                
+                return jsonify({
+                    "filename": row['filename'],
+                    "content_type": row['content_type'],
+                    "data_base64": base64.b64encode(bytes(row['data'])).decode('utf-8')
+                })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -478,6 +619,6 @@ def drive_upload():
 
 
 if __name__ == '__main__':
-    logger.info("Starting webhook service...")
+    logger.info("Starting webhook service with attachment support...")
     ensure_tables()
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
